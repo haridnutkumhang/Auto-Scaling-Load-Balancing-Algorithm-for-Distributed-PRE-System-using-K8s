@@ -1,0 +1,41 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: proxy-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: proxy-worker
+  minReplicas: 1
+  maxReplicas: 10
+
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 75
+
+  behavior:
+    scaleUp:
+      # allow at most +1 pod per 15s
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 15
+      stabilizationWindowSeconds: 0    # zero-delay for scale-up
+    scaleDown:
+      # require 2 consecutive minutes of low load
+      stabilizationWindowSeconds: 120
+      policies:
+      - type: Pods
+        value: 1                    # at most remove 1 pods at once
+        periodSeconds: 15

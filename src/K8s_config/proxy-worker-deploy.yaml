@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-worker
+spec:
+  replicas: 1                  # start with 1 replica; HPA or master will adjust
+  selector:
+    matchLabels:
+      app: proxy-worker
+  template:
+    metadata:
+      labels:
+        app: proxy-worker
+    spec:
+      containers:
+      - name: worker
+        image: asia-southeast1-docker.pkg.dev/cross-domain-459813/proxy-repo/proxy-worker-node:v3
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "0.1"
+            memory: "1Gi"
+          limits:
+            cpu: "0.1"
+            memory: "1Gi"

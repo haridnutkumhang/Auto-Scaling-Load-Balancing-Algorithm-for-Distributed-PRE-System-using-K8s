@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy-master
+  template:
+    metadata:
+      labels:
+        app: proxy-master
+    spec:
+      containers:
+      - name: master 
+        image: asia-southeast1-docker.pkg.dev/cross-domain-459813/proxy-repo/proxy-master-node:randomv2
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "3"
+            memory: "4Gi"
+          limits:
+            cpu: "3"
+            memory: "4Gi"

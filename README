@@ -1,0 +1,167 @@
+# Auto Scaling & Load Balance Algorithm for Distributed Proxy Re-Encryption System
+
+A Kubernetes‐based proxy that auto‐scales and distributes Python job uploads to worker pods for re‐encryption.
+
+## Table of Contents
+
+1. [About](#about)  
+2. [Features](#features)  
+3. [Prerequisites](#prerequisites)  
+4. [Installation](#installation)  
+5. [Usage](#usage)  
+6. [Load Testing](#load-testing)  
+7. [Configuration](#configuration)  
+8. [Troubleshooting](#troubleshooting)  
+
+---
+
+## About
+
+Distributed PRE (Proxy Re‐Encryption) Load Balancer lets you upload a executable file to a single Kubernetes custom load balancer service (`proxy-master`). The master automatically chooses a worker pod to run re‐encryption jobs based on the workers computation resource usage. As demand fluctuates, Horizontal Pod Autoscaler (`HPA`) spins worker pods up/down so that each job is handled promptly without manual intervention.
+
+## Features
+
+- Single “front‐door” API (`/reencrypt`) for clients to upload Python files.  
+- Master proxy polls worker pods’ resource usage via the Kubernetes Metrics API.  
+- Master automatically picks the least computation resource consumption worker.  
+- FastAPI + aiohttp based forwarding (non‐blocking).  
+- Worker pods run the uploaded Python script in a subprocess, then return stdout/stderr.  
+- Kubernetes manifests included: Deployments, Headless Service for workers, HPA spec.  
+- Simple Python load‐tester script (`throughputtest.py`) to measure throughput and latency under various concurrency levels.
+
+## Prerequisites
+
+- A Kubernetes cluster (version ≥ 1.24) with Metrics Server installed.  
+- `kubectl` configured to talk to your cluster.  
+- Docker (for building the `proxy-master` and `proxy-worker` images).  
+- Python 3.9+ installed locally (for running the load‐tester and building images).  
+- (Optional) `gcloud` or other cloud‐CLI if you’re using a managed Kubernetes service.
+
+## Installation
+
+### Build & Push Docker Images
+
+```bash
+# 1. Build the Worker image
+cd K8s_node_worker
+docker build -t <YOUR_REGISTRY>/proxy-worker-node:v1 .
+docker push <YOUR_REGISTRY>/proxy-worker-node:v1
+
+# 2. Build the Master image
+cd ../K8s_node_master
+docker build -t <YOUR_REGISTRY>/proxy-master-node:v1 .
+docker push <YOUR_REGISTRY>/proxy-master-node:v1
+```
+### Apply Kubernetes Manifests
+
+```bash
+cd ../K8s
+# 1. Create RBAC for master
+kubectl apply -f proxy-master-rbac.yaml
+
+# 2. Deploy the master
+kubectl apply -f proxy-master-deploy.yaml
+kubectl apply -f proxy-master-svc.yaml
+
+# 3. Deploy the workers
+kubectl apply -f proxy-worker-deploy.yaml
+kubectl apply -f proxy-workers-svc.yaml
+
+# 4. Set up HPA to auto‐scale worker pods
+kubectl apply -f proxy-worker-hpa.yaml
+
+# 5. Install Metrics-Server (if not yet install)
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+### Verify All Deployments & Services
+
+```bash
+# 1. Check Workers Deployment Status and Pods
+kubectl get deployment proxy-worker
+kubectl get pods -l app=proxy-worker
+
+# 2. Check HPA service --> you should wait until the "TARGETS" cpu and ram percentage are shown before testing
+kubectl get hpa proxy-worker-hpa -w
+
+# 3. Check Workers Deployment Status and Pods
+kubectl get deployment proxy-master
+kubectl get pods -l app=proxy-master
+
+# 4. Get Master External IP
+kubectl get svc proxy-master-svc -w
+
+# 5. Confirm Master RBAC Deployment
+kubectl get sa proxy-master-sa
+kubectl get clusterrole proxy-master-metrics-reader
+kubectl get clusterrolebinding proxy-master-metrics-reader-binding
+
+# 6. After you ran the following line, you should be seeing "proxy-master-sa" as the output.
+kubectl get deployment proxy-master -n default -o jsonpath="{.spec.template.spec.serviceAccountName}"
+
+# 7. (Optional) If not, then run the following line
+ubectl set serviceaccount deployment proxy-master proxy-master-sa -n default
+kubectl rollout restart deployment proxy-master
+
+# 8. Test that you can now retrieve pod metrics (Check Metrics-server are successfully installed)
+kubectl get --raw "/apis/metrics.k8s.io/v1beta1/nodes"
+kubectl top nodes
+kubectl top pods --all-namespaces
+```
+
+## Usage 
+
+### 1. Master API Endpoints
+
+```bash
+cd ../k8s_request
+# POST /reencrypt: upload a .py Python script for re‐encryption.
+curl -X POST -F "file=@my_script.py" http://<MASTER_EXTERNAL_IP>/reencrypt
+```
+The response `JSON` includes: 
+- `"returncode"`, `"stdout"`, `"stderr"`
+
+### 2. Worker API Endpoints
+- `POST` `/reencrypt`: (master → worker) receives the file, executes it, returns JSON.
+
+## Load Testing
+
+Use the bundled `throughputtest.py` script to benchmark:
+
+```bash
+# Example of sending 1000 concurrency requests with 10000 requests in total
+python throughputtest.py --url http://<MASTER_EXTERNAL_IP>/reencrypt --file my_script.py --total 10000 --concurrent 1000
+```
+- `--total` = total number of requests.
+- `--concurrent` = how many simultaneous requests to keep in flight.
+
+Results show: `Total`, `Successful`, `Failed`, `Total Time (s)`, `Throughput (req/s)`, Latency `p50`/`p95`/`p99`.
+
+## Configuration
+
+- `proxy-worker-deploy.yam` --> worker `CPU & memory requests/limits.v` and `start number of workers` when deploy (default=1).
+- `proxy-worker-hpa.yaml` --> HPA spec (Average CPU%, Memory%, min/max workers).
+- `proxy-master-deploy.yaml` --> you can adjust uvicorn workers or master resources.
+- Change Master → Worker timeout by editing:
+```bash
+# This example set timeout=200, which mean the master will disconnects the port if the master didn't recieve the request that was sent via the according port by 200 seconds.
+async with session.post(f"{worker_url}/reencrypt", data=form, timeout=200) as resp:
+
+# You can change to None for letting requests never be timeout
+async with session.post(f"{worker_url}/reencrypt", data=form, timeout=None) as resp:
+```
+
+## Troubleshooting
+
+### 1. 502 Bad Gateway from master
+- Master → Worker timeout too low (increase timeout).
+- Worker pods not running or mis‐labeled (check kubectl get pods -l app=proxy-worker).
+- Missing RBAC → apply proxy-master-rbac.yaml and ensure Deployment uses serviceAccountName: proxy-master-sa.
+
+### 2. Load‐test failures
+- Client hitting ephemeral port limit or FD limit (use WSL2/Linux, ulimit -n 65535).
+- Concurrency too high—workers queue deep → increase worker CPU or replicas.
+
+### 3. Metrics not found
+- `“pods.metrics.k8s.io forbidden”` → you need RBAC and correct ServiceAccount.
+
